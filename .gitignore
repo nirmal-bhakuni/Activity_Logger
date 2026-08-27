@@ -1,0 +1,19 @@
+# Compiled binaries
+*.exe
+*.o
+*.obj
+*.out
+
+# Build artifacts
+*.ilk
+*.pdb
+
+# VS Code settings (optional - remove this line if you want to share workspace settings)
+.vscode/
+
+# OS-generated files
+Thumbs.db
+desktop.ini
+
+# Logs (if your program writes any local logs)
+*.log
