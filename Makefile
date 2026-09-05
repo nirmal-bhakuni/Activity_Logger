@@ -26,8 +26,11 @@ process_stats.exe: process_stats.cpp
 idle_check.exe: idle_check.cpp
 	$(CXX) idle_check.cpp -o idle_check.exe $(CXXFLAGS)
 
+report.exe: report.cpp
+	$(CXX) report.cpp -o report.exe $(MYSQL_FLAGS) $(CXXFLAGS)
+
 # Build everything at once
-all_targets: activity_monitor.exe test_connection.exe process_list.exe process_stats.exe idle_check.exe
+all_targets: activity_monitor.exe test_connection.exe process_list.exe process_stats.exe idle_check.exe report.exe
 
 clean:
 	del *.exe
