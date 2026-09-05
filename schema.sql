@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id INT AUTO_INCREMENT PRIMARY KEY,
     start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     end_time DATETIME NULL,
-    total_idle_seconds INT DEFAULT 0
+    total_idle_seconds INT DEFAULT 0,
+    employee_id VARCHAR(50),
+    machine_name VARCHAR(100)
 );
 
 CREATE TABLE IF NOT EXISTS process_snapshots (

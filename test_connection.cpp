@@ -11,9 +11,9 @@ int main() {
 
     conn = mysql_real_connect(
         conn,
-        "localhost",
-        "root",
-        "root",   // same password as before
+        "192.168.1.20",     // previously "localhost",
+        "monitor_user",
+        "ChooseAStrongPassword123!",   // same password as before
         "activity_monitor", // now connecting to the actual DB
         3306,
         NULL,
