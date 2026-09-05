@@ -3,6 +3,9 @@
 #include <psapi.h>
 #include <mysql.h>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <map>
 #include <string>
 #include <vector>
 #include <iomanip>
@@ -13,11 +16,6 @@ using namespace std;
 const int SNAPSHOT_INTERVAL_SECONDS = 5;
 const int TOTAL_RUN_SECONDS = 120; // 2 minutes
 const int IDLE_THRESHOLD_SECONDS = 60;
-
-const char* DB_HOST = "localhost";
-const char* DB_USER = "root";
-const char* DB_PASS = "root"; // replace this
-const char* DB_NAME = "activity_monitor";
 // -----------------------------
 
 // Global pointer so the Ctrl+C handler can access the DB connection and session ID
@@ -40,6 +38,46 @@ BOOL WINAPI ConsoleHandler(DWORD signal) {
     return TRUE;
 }
 
+// ---------- Config file loader ----------
+map<string, string> LoadConfig(const string& filename) {
+    map<string, string> config;
+    ifstream file(filename);
+
+    if (!file.is_open()) {
+        cerr << "Could not open config file: " << filename << "\n";
+        return config;
+    }
+
+    string line, currentSection;
+    while (getline(file, line)) {
+        size_t start = line.find_first_not_of(" \t\r\n");
+        if (start == string::npos) continue;
+        line = line.substr(start);
+
+        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+
+        if (line[0] == '[') {
+            size_t end = line.find(']');
+            currentSection = line.substr(1, end - 1);
+            continue;
+        }
+
+        size_t eq = line.find('=');
+        if (eq == string::npos) continue;
+
+        string key = line.substr(0, eq);
+        string value = line.substr(eq + 1);
+
+        size_t vEnd = value.find_last_not_of(" \t\r\n");
+        if (vEnd != string::npos) value = value.substr(0, vEnd + 1);
+
+        config[currentSection + "." + key] = value;
+    }
+
+    return config;
+}
+
+// ---------- Window visibility check ----------
 struct WindowCheckData {
     DWORD pid;
     bool hasWindow;
@@ -64,6 +102,7 @@ bool ProcessHasVisibleWindow(DWORD pid) {
     return data.hasWindow;
 }
 
+// ---------- CPU / memory helpers ----------
 ULONGLONG FileTimeToInt(const FILETIME& ft) {
     ULARGE_INTEGER uli;
     uli.LowPart = ft.dwLowDateTime;
@@ -115,10 +154,7 @@ double GetIdleTimeSeconds() {
     return (currentTick - lii.dwTime) / 1000.0;
 }
 
-struct ProcessInfo {
-    DWORD pid;
-    string name;
-};
+// ---------- Process enumeration ----------
 string WideToNarrow(const wchar_t* wstr) {
     int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
     if (size <= 0) return "";
@@ -126,6 +162,11 @@ string WideToNarrow(const wchar_t* wstr) {
     WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], size, NULL, NULL);
     return result;
 }
+
+struct ProcessInfo {
+    DWORD pid;
+    string name;
+};
 
 vector<ProcessInfo> GetUserFacingProcesses() {
     vector<ProcessInfo> result;
@@ -151,6 +192,28 @@ vector<ProcessInfo> GetUserFacingProcesses() {
 }
 
 int main() {
+    // ---------- Load config ----------
+    map<string, string> config = LoadConfig("config.ini");
+
+    string dbHost = config["database.host"];
+    string dbUser = config["database.user"];
+    string dbPass = config["database.password"];
+    string dbName = config["database.database"];
+    string employeeId = config["employee.employee_id"];
+    string employeeName = config["employee.employee_name"];
+
+    if (dbHost.empty() || dbUser.empty() || dbName.empty()) {
+        cerr << "Config file missing or incomplete. Check config.ini\n";
+        return 1;
+    }
+
+    char machineNameBuf[256];
+    DWORD machineNameSize = sizeof(machineNameBuf);
+    GetComputerNameA(machineNameBuf, &machineNameSize);
+    string machineName(machineNameBuf);
+
+    cout << "Employee: " << employeeName << " (" << employeeId << ")  Machine: " << machineName << "\n";
+
     // ---------- Connect to MySQL ----------
     MYSQL* conn = mysql_init(NULL);
     if (conn == NULL) {
@@ -158,7 +221,7 @@ int main() {
         return 1;
     }
 
-    conn = mysql_real_connect(conn, DB_HOST, DB_USER, DB_PASS, DB_NAME, 3306, NULL, 0);
+    conn = mysql_real_connect(conn, dbHost.c_str(), dbUser.c_str(), dbPass.c_str(), dbName.c_str(), 3306, NULL, 0);
     if (conn == NULL) {
         cerr << "Connection failed: " << mysql_error(conn) << "\n";
         return 1;
@@ -166,7 +229,9 @@ int main() {
     cout << "Connected to database.\n";
 
     // ---------- Start a new session ----------
-    string startQuery = "INSERT INTO sessions (start_time) VALUES (NOW())";
+    string startQuery = "INSERT INTO sessions (start_time, employee_id, machine_name) VALUES (NOW(), '"
+        + employeeId + "', '" + machineName + "')";
+
     if (mysql_query(conn, startQuery.c_str())) {
         cerr << "Failed to create session: " << mysql_error(conn) << "\n";
         mysql_close(conn);
@@ -174,9 +239,10 @@ int main() {
     }
     unsigned long long sessionId = mysql_insert_id(conn);
     cout << "Started session ID: " << sessionId << "\n";
+
     g_conn = conn;
-g_sessionId = sessionId;
-SetConsoleCtrlHandler(ConsoleHandler, TRUE);
+    g_sessionId = sessionId;
+    SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
     // ---------- Monitoring loop ----------
     int elapsed = 0;
@@ -187,9 +253,9 @@ SetConsoleCtrlHandler(ConsoleHandler, TRUE);
         bool isIdle = (idleSeconds >= IDLE_THRESHOLD_SECONDS);
 
         if (isIdle) {
-    totalIdleSeconds += SNAPSHOT_INTERVAL_SECONDS;
-    g_totalIdleSeconds = totalIdleSeconds;
-}
+            totalIdleSeconds += SNAPSHOT_INTERVAL_SECONDS;
+            g_totalIdleSeconds = totalIdleSeconds;
+        }
 
         vector<ProcessInfo> processes = GetUserFacingProcesses();
 
