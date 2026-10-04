@@ -9,9 +9,9 @@ PSAPI_FLAGS = -lpsapi
 
 all: activity_monitor.exe
 
-# Main integrated program - needs both MySQL and psapi
+# Main integrated program - needs MySQL, psapi, and threading (pthread)
 activity_monitor.exe: activity_monitor.cpp
-	$(CXX) activity_monitor.cpp -o activity_monitor.exe $(MYSQL_FLAGS) $(PSAPI_FLAGS) $(CXXFLAGS)
+	$(CXX) activity_monitor.cpp -o activity_monitor.exe $(MYSQL_FLAGS) $(PSAPI_FLAGS) $(CXXFLAGS) -pthread
 
 # Standalone test files
 test_connection.exe: test_connection.cpp
