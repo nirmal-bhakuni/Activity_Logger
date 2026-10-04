@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include<queue>
+#include<thread>
+#include<mutex>
+#include<condition_variable>
 
 using namespace std;
 
@@ -22,6 +26,19 @@ const int IDLE_THRESHOLD_SECONDS = 60;
 MYSQL* g_conn = nullptr;
 unsigned long long g_sessionId = 0;
 int g_totalIdleSeconds = 0;
+
+struct Snapshot{
+    string processName;
+    DWORD pid;
+    double cpuUsage;
+    double memoryUsageMB;
+    bool isIdle;
+};
+queue<Snapshot> g_snapshotQueue;
+mutex g_queueMutex;
+condition_variable g_queueCondVar;
+bool g_producerDone=false;
+const size_t MAX_QUEUE_SIZE=50;
 
 BOOL WINAPI ConsoleHandler(DWORD signal) {
     if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT || signal == CTRL_BREAK_EVENT) {
@@ -191,6 +208,99 @@ vector<ProcessInfo> GetUserFacingProcesses() {
     return result;
 }
 
+//producer scans processes ,pushes snapshots into the shared queue
+void ProducerThread() {
+    int elapsed = 0;
+    while (elapsed < TOTAL_RUN_SECONDS) {
+        double idleSeconds = GetIdleTimeSeconds();
+        bool isIdle = (idleSeconds >= IDLE_THRESHOLD_SECONDS);
+
+        if (isIdle) {
+            g_totalIdleSeconds += SNAPSHOT_INTERVAL_SECONDS;
+        }
+
+        vector<ProcessInfo> processes = GetUserFacingProcesses();
+
+        cout << "\n[Producer] [t=" << elapsed << "s] Idle: " << idleSeconds << "s  |  Status: "
+             << (isIdle ? "IDLE" : "ACTIVE") << "\n";
+
+        for (const auto& proc : processes) {
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, proc.pid);
+            if (hProcess == NULL) continue;
+
+            double cpu = GetCpuUsagePercent(hProcess);
+            double mem = GetMemoryUsageMB(hProcess);
+            CloseHandle(hProcess);
+
+            Snapshot snap;
+            snap.processName = proc.name;
+            snap.pid = proc.pid;
+            snap.cpuUsage = cpu;
+            snap.memoryUsageMB = mem;
+            snap.isIdle = isIdle;
+
+            // ---- Critical section: lock before touching the shared queue ----
+            {
+                unique_lock<mutex> lock(g_queueMutex);
+                g_queueCondVar.wait(lock, [] { return g_snapshotQueue.size() < MAX_QUEUE_SIZE; });
+                g_snapshotQueue.push(snap);
+            }
+            g_queueCondVar.notify_one();
+        }
+
+        int sampleTimeSpent = processes.size() * 200;
+        int remainingSleep = (SNAPSHOT_INTERVAL_SECONDS * 1000) - sampleTimeSpent;
+        if (remainingSleep > 0) Sleep(remainingSleep);
+        elapsed += SNAPSHOT_INTERVAL_SECONDS;
+    }
+
+    {
+        unique_lock<mutex> lock(g_queueMutex);
+        g_producerDone = true;
+    }
+    g_queueCondVar.notify_all();
+}
+
+
+// ---------- Consumer: pulls snapshots from the queue, writes them to MySQL ----------
+void ConsumerThread(MYSQL* conn, unsigned long long sessionId) {
+    while (true) {
+        Snapshot snap;
+        bool gotItem = false;
+
+        {
+            unique_lock<mutex> lock(g_queueMutex);
+            g_queueCondVar.wait(lock, [] { return !g_snapshotQueue.empty() || g_producerDone; });
+
+            if (!g_snapshotQueue.empty()) {
+                snap = g_snapshotQueue.front();
+                g_snapshotQueue.pop();
+                gotItem = true;
+            } else if (g_producerDone) {
+                break;
+            }
+        }
+        g_queueCondVar.notify_one();
+
+        if (gotItem) {
+              this_thread::sleep_for(chrono::milliseconds(700)); // artificial delay to visualize concurrency
+            cout << "  [Consumer] Writing " << snap.processName << " (PID " << snap.pid << ")\n";
+
+            string insertQuery = "INSERT INTO process_snapshots "
+                "(session_id, process_name, pid, cpu_usage, memory_usage_mb, is_idle) VALUES ("
+                + to_string(sessionId) + ", '"
+                + snap.processName + "', "
+                + to_string(snap.pid) + ", "
+                + to_string(snap.cpuUsage) + ", "
+                + to_string(snap.memoryUsageMB) + ", "
+                + (snap.isIdle ? "1" : "0") + ")";
+
+            if (mysql_query(conn, insertQuery.c_str())) {
+                cerr << "Insert failed: " << mysql_error(conn) << "\n";
+            }
+        }
+    }
+}
 int main() {
     // ---------- Load config ----------
     map<string, string> config = LoadConfig("config.ini");
@@ -243,59 +353,14 @@ int main() {
     g_conn = conn;
     g_sessionId = sessionId;
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
+    // ---------- Start producer and consumer threads ----------
+    thread producer(ProducerThread);
+    thread consumer(ConsumerThread, conn, sessionId);
 
-    // ---------- Monitoring loop ----------
-    int elapsed = 0;
-    int totalIdleSeconds = 0;
+    producer.join();
+    consumer.join();
 
-    while (elapsed < TOTAL_RUN_SECONDS) {
-        double idleSeconds = GetIdleTimeSeconds();
-        bool isIdle = (idleSeconds >= IDLE_THRESHOLD_SECONDS);
-
-        if (isIdle) {
-            totalIdleSeconds += SNAPSHOT_INTERVAL_SECONDS;
-            g_totalIdleSeconds = totalIdleSeconds;
-        }
-
-        vector<ProcessInfo> processes = GetUserFacingProcesses();
-
-        cout << "\n[t=" << elapsed << "s] Idle: " << idleSeconds << "s  |  Status: "
-             << (isIdle ? "IDLE" : "ACTIVE") << "\n";
-
-        for (const auto& proc : processes) {
-            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, proc.pid);
-            if (hProcess == NULL) continue;
-
-            double cpu = GetCpuUsagePercent(hProcess);
-            double mem = GetMemoryUsageMB(hProcess);
-            CloseHandle(hProcess);
-
-            string procName = proc.name;
-
-            cout << "  " << procName << " (PID " << proc.pid << ") - CPU: "
-                 << fixed << setprecision(2) << cpu << "%  Mem: " << mem << " MB\n";
-
-            string insertQuery = "INSERT INTO process_snapshots "
-                "(session_id, process_name, pid, cpu_usage, memory_usage_mb, is_idle) VALUES ("
-                + to_string(sessionId) + ", '"
-                + procName + "', "
-                + to_string(proc.pid) + ", "
-                + to_string(cpu) + ", "
-                + to_string(mem) + ", "
-                + (isIdle ? "1" : "0") + ")";
-
-            if (mysql_query(conn, insertQuery.c_str())) {
-                cerr << "Insert failed: " << mysql_error(conn) << "\n";
-            }
-        }
-
-        int sampleTimeSpent = processes.size() * 200;
-        int remainingSleep = (SNAPSHOT_INTERVAL_SECONDS * 1000) - sampleTimeSpent;
-        if (remainingSleep > 0) {
-            Sleep(remainingSleep);
-        }
-        elapsed += SNAPSHOT_INTERVAL_SECONDS;
-    }
+    int totalIdleSeconds = g_totalIdleSeconds;
 
     // ---------- Close out the session ----------
     string endQuery = "UPDATE sessions SET end_time = NOW(), total_idle_seconds = "
