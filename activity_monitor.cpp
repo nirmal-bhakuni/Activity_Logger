@@ -40,6 +40,15 @@ condition_variable g_queueCondVar;
 bool g_producerDone=false;
 const size_t MAX_QUEUE_SIZE=50;
 
+// ---------- Second shared resource: session statistics ----------
+struct SessionStats {
+    int totalSnapshotsWritten = 0;
+    int totalIdleCount = 0;
+};
+
+SessionStats g_stats;
+mutex g_statsMutex;
+
 BOOL WINAPI ConsoleHandler(DWORD signal) {
     if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT || signal == CTRL_BREAK_EVENT) {
         if (g_conn != nullptr && g_sessionId != 0) {
@@ -298,9 +307,51 @@ void ConsumerThread(MYSQL* conn, unsigned long long sessionId) {
             if (mysql_query(conn, insertQuery.c_str())) {
                 cerr << "Insert failed: " << mysql_error(conn) << "\n";
             }
+
+            // ---- Update shared stats using its own independent mutex ----
+            // This lock is acquired and released completely separately from g_queueMutex.
+            // At no point does this thread hold both locks at once here, which avoids
+            // circular-wait deadlock between the queue and stats resources.
+            {
+                lock_guard<mutex> statsLock(g_statsMutex);
+                g_stats.totalSnapshotsWritten++;
+                if (snap.isIdle) {
+                    g_stats.totalIdleCount++;
+                }
+            }
         }
     }
 }
+
+// ---------- Reporter: periodically reads BOTH shared resources safely ----------
+// This function demonstrates the deadlock-avoidance rule in action: whenever
+// a thread needs to inspect both the queue and the stats, it must always
+// acquire g_queueMutex BEFORE g_statsMutex, in that fixed order, never reversed.
+// As long as every thread in the program obeys this same global ordering rule,
+// circular wait (and therefore deadlock) cannot occur, even with multiple locks.
+void ReporterThread() {
+    while (!g_producerDone || !g_snapshotQueue.empty()) {
+        this_thread::sleep_for(chrono::seconds(3));
+
+        size_t queueSize;
+        int snapshotsWritten, idleCount;
+
+        // Lock order: queue mutex FIRST, then stats mutex. Always this order.
+        {
+            lock_guard<mutex> queueLock(g_queueMutex);
+            lock_guard<mutex> statsLock(g_statsMutex);
+
+            queueSize = g_snapshotQueue.size();
+            snapshotsWritten = g_stats.totalSnapshotsWritten;
+            idleCount = g_stats.totalIdleCount;
+        }
+
+        cout << "  [Reporter] Queue size: " << queueSize
+             << "  |  Written so far: " << snapshotsWritten
+             << "  |  Idle count: " << idleCount << "\n";
+    }
+}
+
 int main() {
     // ---------- Load config ----------
     map<string, string> config = LoadConfig("config.ini");
@@ -353,12 +404,15 @@ int main() {
     g_conn = conn;
     g_sessionId = sessionId;
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
-    // ---------- Start producer and consumer threads ----------
+
+    // ---------- Start producer, consumer, and reporter threads ----------
     thread producer(ProducerThread);
     thread consumer(ConsumerThread, conn, sessionId);
+    thread reporter(ReporterThread);
 
     producer.join();
     consumer.join();
+    reporter.join();
 
     int totalIdleSeconds = g_totalIdleSeconds;
 
