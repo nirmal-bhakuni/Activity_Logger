@@ -1,9 +1,15 @@
+; Copy this file to config.ini and fill in your own values.
+; config.ini holds a password, so it is listed in .gitignore and must NOT be committed.
+
 [database]
-host=192.168.1.20
+; Use "localhost" if MySQL runs on this same PC.
+; Use the server PC's IP address (for example 192.168.1.20) if MySQL runs on another PC.
+host=localhost
 user=monitor_user
-password="pass"
+password=CHANGE_ME
 database=activity_monitor
 
 [employee]
+; Each employee PC gets its own ID and name
 employee_id=EMP001
-employee_name="name"
+employee_name=Your Name
