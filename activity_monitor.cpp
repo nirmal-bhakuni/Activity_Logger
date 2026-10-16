@@ -1,6 +1,4 @@
 #include <windows.h>
-#include <tlhelp32.h>
-#include <psapi.h>
 #include <mysql.h>
 #include <iostream>
 #include <fstream>
@@ -14,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include "activity_helpers.h"
 
 using namespace std;
 
@@ -145,139 +144,6 @@ map<string, string> LoadConfig(const string &filename)
     }
 
     return config;
-}
-
-// ---------- Window visibility check ----------
-struct WindowCheckData
-{
-    DWORD pid;
-    bool hasWindow;
-};
-
-BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam)
-{
-    WindowCheckData *data = (WindowCheckData *)lParam;
-    DWORD windowPid;
-    GetWindowThreadProcessId(hwnd, &windowPid);
-    if (windowPid == data->pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL)
-    {
-        data->hasWindow = true;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-bool ProcessHasVisibleWindow(DWORD pid)
-{
-    WindowCheckData data;
-    data.pid = pid;
-    data.hasWindow = false;
-    EnumWindows(EnumWindowsCallback, (LPARAM)&data);
-    return data.hasWindow;
-}
-
-// ---------- CPU / memory helpers ----------
-ULONGLONG FileTimeToInt(const FILETIME &ft)
-{
-    ULARGE_INTEGER uli;
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-    return uli.QuadPart;
-}
-
-double GetMemoryUsageMB(HANDLE hProcess)
-{
-    PROCESS_MEMORY_COUNTERS pmc;
-    if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc)))
-    {
-        return pmc.WorkingSetSize / (1024.0 * 1024.0);
-    }
-    return -1.0;
-}
-
-double GetCpuUsagePercent(HANDLE hProcess, DWORD intervalMs = 200)
-{
-    FILETIME creationTime, exitTime, kernelTime1, userTime1, kernelTime2, userTime2;
-    FILETIME sysIdle1, sysKernel1, sysUser1, sysIdle2, sysKernel2, sysUser2;
-
-    if (!GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime1, &userTime1))
-        return -1.0;
-    GetSystemTimes(&sysIdle1, &sysKernel1, &sysUser1);
-
-    Sleep(intervalMs);
-
-    if (!GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime2, &userTime2))
-        return -1.0;
-    GetSystemTimes(&sysIdle2, &sysKernel2, &sysUser2);
-
-    ULONGLONG procDelta = (FileTimeToInt(kernelTime2) + FileTimeToInt(userTime2)) -
-                          (FileTimeToInt(kernelTime1) + FileTimeToInt(userTime1));
-    ULONGLONG sysDelta = (FileTimeToInt(sysKernel2) + FileTimeToInt(sysUser2)) -
-                         (FileTimeToInt(sysKernel1) + FileTimeToInt(sysUser1));
-
-    if (sysDelta == 0)
-        return 0.0;
-
-    SYSTEM_INFO sysInfo;
-    GetSystemInfo(&sysInfo);
-    int numCores = sysInfo.dwNumberOfProcessors;
-
-    return (double(procDelta) / double(sysDelta)) * 100.0 * numCores;
-}
-
-double GetIdleTimeSeconds()
-{
-    LASTINPUTINFO lii;
-    lii.cbSize = sizeof(LASTINPUTINFO);
-    if (!GetLastInputInfo(&lii))
-        return -1.0;
-    DWORD currentTick = GetTickCount();
-    return (currentTick - lii.dwTime) / 1000.0;
-}
-
-// ---------- Process enumeration ----------
-string WideToNarrow(const wchar_t *wstr)
-{
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
-    if (size <= 0)
-        return "";
-    string result(size - 1, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], size, NULL, NULL);
-    return result;
-}
-
-struct ProcessInfo
-{
-    DWORD pid;
-    string name;
-};
-
-vector<ProcessInfo> GetUserFacingProcesses()
-{
-    vector<ProcessInfo> result;
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE)
-        return result;
-
-    PROCESSENTRY32W entry;
-    entry.dwSize = sizeof(PROCESSENTRY32W);
-
-    if (Process32FirstW(snapshot, &entry))
-    {
-        do
-        {
-            if (ProcessHasVisibleWindow(entry.th32ProcessID))
-            {
-                ProcessInfo info;
-                info.pid = entry.th32ProcessID;
-                info.name = WideToNarrow(entry.szExeFile);
-                result.push_back(info);
-            }
-        } while (Process32NextW(snapshot, &entry));
-    }
-
-    CloseHandle(snapshot);
-    return result;
 }
 
 // ---------- Producer: scans processes, pushes snapshots into the shared queue ----------
