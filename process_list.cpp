@@ -1,31 +1,31 @@
 #include <windows.h>
 #include <tlhelp32.h>
-#include <iostream>
-#include <vector>
+#include "process_list.h"
 
-using namespace std;
-
-// Struct to hold PID -> whether it has a visible window
-struct WindowCheckData {
+struct WindowCheckData
+{
     DWORD pid;
     bool hasWindow;
 };
 
-BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
-    WindowCheckData* data = (WindowCheckData*)lParam;
+BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam)
+{
+    WindowCheckData *data = (WindowCheckData *)lParam;
 
     DWORD windowPid;
     GetWindowThreadProcessId(hwnd, &windowPid);
 
-    if (windowPid == data->pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL) {
+    if (windowPid == data->pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL)
+    {
         data->hasWindow = true;
-        return FALSE; // stop enumerating, found a match
+        return FALSE;
     }
 
-    return TRUE; // keep looking
+    return TRUE;
 }
 
-bool ProcessHasVisibleWindow(DWORD pid) {
+bool ProcessHasVisibleWindow(DWORD pid)
+{
     WindowCheckData data;
     data.pid = pid;
     data.hasWindow = false;
@@ -35,35 +35,41 @@ bool ProcessHasVisibleWindow(DWORD pid) {
     return data.hasWindow;
 }
 
-int main() {
+std::string WideToNarrow(const wchar_t *wstr)
+{
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+    if (size <= 0)
+        return "";
+
+    std::string result(size - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], size, NULL, NULL);
+    return result;
+}
+
+std::vector<ProcessInfo> GetUserFacingProcesses()
+{
+    std::vector<ProcessInfo> result;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return result;
 
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        cerr << "Failed to create snapshot\n";
-        return 1;
+    PROCESSENTRY32W entry;
+    entry.dwSize = sizeof(PROCESSENTRY32W);
+
+    if (Process32FirstW(snapshot, &entry))
+    {
+        do
+        {
+            if (ProcessHasVisibleWindow(entry.th32ProcessID))
+            {
+                ProcessInfo info;
+                info.pid = entry.th32ProcessID;
+                info.name = WideToNarrow(entry.szExeFile);
+                result.push_back(info);
+            }
+        } while (Process32NextW(snapshot, &entry));
     }
-
-    PROCESSENTRY32 entry;
-    entry.dwSize = sizeof(PROCESSENTRY32);
-
-    if (!Process32First(snapshot, &entry)) {
-        cerr << "Process32First failed\n";
-        CloseHandle(snapshot);
-        return 1;
-    }
-
-    cout << "User-facing processes (with visible windows):\n";
-    cout << "----------------------------------------------\n";
-
-    do {
-        DWORD pid = entry.th32ProcessID;
-
-        if (ProcessHasVisibleWindow(pid)) {
-            wcout << L"PID: " << pid << L"  |  " << entry.szExeFile << L"\n";
-        }
-
-    } while (Process32Next(snapshot, &entry));
 
     CloseHandle(snapshot);
-    return 0;
+    return result;
 }

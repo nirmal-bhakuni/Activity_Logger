@@ -4,6 +4,11 @@
 #include <map>
 #include <string>
 
+void WaitBeforeExit() {
+    std::cout << "\nPress Enter to close...";
+    std::cin.get();
+}
+
 std::map<std::string, std::string> loadConfig(const std::string& filename) {
     std::map<std::string, std::string> config;
     std::ifstream file(filename);
@@ -63,6 +68,7 @@ int main() {
         host->second.empty() || user->second.empty() ||
         database->second.empty()) {
         std::cerr << "config.ini is missing database settings\n";
+        WaitBeforeExit();
         return 1;
     }
 
@@ -70,6 +76,7 @@ int main() {
 
     if (conn == NULL) {
         std::cerr << "mysql_init failed\n";
+        WaitBeforeExit();
         return 1;
     }
 
@@ -86,6 +93,7 @@ int main() {
 
     if (conn == NULL) {
         std::cerr << "Connection failed: " << mysql_error(conn) << "\n";
+        WaitBeforeExit();
         return 1;
     }
 
@@ -97,6 +105,7 @@ int main() {
     if (mysql_query(conn, query.c_str())) {
         std::cerr << "Schema check failed: " << mysql_error(conn) << "\n";
         mysql_close(conn);
+        WaitBeforeExit();
         return 1;
     }
 
@@ -105,6 +114,7 @@ int main() {
         std::cerr << "Could not read schema check result: "
                   << mysql_error(conn) << "\n";
         mysql_close(conn);
+        WaitBeforeExit();
         return 1;
     }
 
@@ -114,5 +124,6 @@ int main() {
     mysql_free_result(result);
 
     mysql_close(conn);
+    WaitBeforeExit();
     return 0;
 }

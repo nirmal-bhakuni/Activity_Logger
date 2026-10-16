@@ -106,5 +106,7 @@ int main() {
         "GROUP BY s.session_id ORDER BY s.session_id");
 
     mysql_close(conn);
+    cout << "\nPress Enter to close...";
+    cin.get();
     return 0;
 }
