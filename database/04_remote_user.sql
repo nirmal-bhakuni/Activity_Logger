@@ -1,11 +1,17 @@
 -- ============================================================
--- 04_remote_user.sql  -  OPTIONAL: let other PCs connect to this database
+-- 04_remote_user.sql  -  Creates the database user the agent logs in with
 -- ============================================================
--- Only needed when agents run on OTHER machines than the MySQL server.
--- Run this on the SERVER machine. Before running, change CHANGE_ME_PASSWORD.
--- Never commit a real password to Git.
+-- Run this on the SERVER PC (the one running MySQL). Before running,
+-- change CHANGE_ME_PASSWORD (in all four places). Never commit a real password.
 --
--- ALSO NEEDED on the server (these are not SQL):
+-- WHY TWO ACCOUNTS
+--   MySQL treats 'monitor_user'@'localhost' and 'monitor_user'@'%' as two
+--   separate accounts.
+--     @'localhost'  used when the agent runs on this same PC (host=localhost)
+--     @'%'          used when an agent on ANOTHER PC connects over the network
+--   If you only run the agent on the server PC, the first account is enough.
+--
+-- FOR OTHER PCs YOU ALSO NEED (these are not SQL):
 --   1. In my.ini under [mysqld] add:   bind-address=0.0.0.0
 --      then restart:   Restart-Service -Name "MySQL80"     (admin PowerShell)
 --   2. Open the firewall (admin PowerShell):
@@ -14,10 +20,21 @@
 --
 -- Note: '%' means "connect from any computer". Fine for a college demo;
 -- in real use, restrict it to known addresses.
+--
+-- CHANGING A PASSWORD LATER
+--   CREATE USER IF NOT EXISTS does NOT change the password of an existing user.
+--   Use ALTER USER for that (the lines below do this, so the file can be re-run).
 -- ============================================================
 
-CREATE USER IF NOT EXISTS 'monitor_user'@'%' IDENTIFIED BY 'CHANGE_ME_PASSWORD';
+-- Account for an agent running on this same PC
+CREATE USER IF NOT EXISTS 'monitor_user'@'localhost' IDENTIFIED BY 'CHANGE_ME_PASSWORD';
+ALTER USER 'monitor_user'@'localhost' IDENTIFIED BY 'CHANGE_ME_PASSWORD';
+GRANT ALL PRIVILEGES ON activity_monitor.* TO 'monitor_user'@'localhost';
 
--- Access to this one database only, not all of MySQL
+-- Account for agents on other PCs
+CREATE USER IF NOT EXISTS 'monitor_user'@'%' IDENTIFIED BY 'CHANGE_ME_PASSWORD';
+ALTER USER 'monitor_user'@'%' IDENTIFIED BY 'CHANGE_ME_PASSWORD';
 GRANT ALL PRIVILEGES ON activity_monitor.* TO 'monitor_user'@'%';
+
+-- Access is limited to this one database, not all of MySQL
 FLUSH PRIVILEGES;
