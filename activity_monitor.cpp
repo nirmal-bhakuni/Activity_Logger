@@ -21,7 +21,7 @@ using namespace std;
 const int SNAPSHOT_INTERVAL_SECONDS = 5;
 const int TOTAL_RUN_SECONDS = 120; // 2 minutes
 const int IDLE_THRESHOLD_SECONDS = 60;
-const int CONSUMER_DEMO_DELAY_MS = 0; // demo only: set to 0 for real use
+const int CONSUMER_DEMO_DELAY_MS = 700; // demo only: set to 0 for real use
 // -----------------------------
 
 // ---------- Shared state ----------
@@ -423,12 +423,11 @@ int main() {
         cerr << "mysql_init failed\n";
         return 1;
     }
-
-    conn = mysql_real_connect(conn, dbHost.c_str(), dbUser.c_str(), dbPass.c_str(), dbName.c_str(), 3306, NULL, 0);
-    if (conn == NULL) {
-        cerr << "Connection failed: " << mysql_error(conn) << "\n";
-        return 1;
-    }
+if (mysql_real_connect(conn, dbHost.c_str(), dbUser.c_str(), dbPass.c_str(), dbName.c_str(), 3306, NULL, 0) == NULL) {
+    cerr << "Connection failed: " << mysql_error(conn) << "\n";
+    mysql_close(conn);
+    return 1;
+}
     cout << "Connected to database.\n";
 
     // ---------- Start a new session ----------
