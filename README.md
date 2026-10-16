@@ -82,7 +82,7 @@ copy config.ini.example config.ini
 
 Set the database host, user, password, and this PC's employee ID. `config.ini` holds a password and is in `.gitignore`. Do not commit it.
 
-If you are running on the same PC as MySQL, use `host=localhost`. You can use `root` as the user, or create `monitor_user` (see step 5).
+If you are running on the same PC as MySQL, use `host=localhost`. You can use `root` as the user, or create `monitor_user` with `database/04_remote_user.sql` (see step 5).
 
 ### 4. MySQL library files
 
@@ -98,9 +98,20 @@ The repo already includes `libmysql.dll`, `libmysql.a`, `libmysql.def` and the `
 
 Why: MySQL's own Connector/C++ is built for the MSVC compiler and does not link with MinGW. The C library (`libmysql`) with a MinGW-made `.a` file does.
 
-### 5. Optional: let other PCs connect
+### 5. Create the database user (and optionally let other PCs connect)
 
-Only needed if agents run on different PCs than the database server. On the server PC:
+Edit the password in `database/04_remote_user.sql`, then run it on the PC that runs MySQL:
+
+```
+mysql -u root -p -e "source database/04_remote_user.sql"
+```
+
+This creates two accounts, because MySQL treats them as separate:
+
+- `monitor_user`@`localhost` is for an agent on the same PC as MySQL
+- `monitor_user`@`%` is for agents on other PCs
+
+If every agent runs on the MySQL PC, you are done with this step. Only follow the rest if agents run on different PCs. On the server PC:
 
 1. Edit `my.ini` (usually `C:\ProgramData\MySQL\MySQL Server 8.0\`). Under `[mysqld]` add:
    ```
@@ -114,11 +125,7 @@ Only needed if agents run on different PCs than the database server. On the serv
    ```
    New-NetFirewallRule -DisplayName "MySQL Remote Access" -Direction Inbound -Protocol TCP -LocalPort 3306 -Action Allow
    ```
-4. Edit the password in `database/04_remote_user.sql`, then run it:
-   ```
-   mysql -u root -p -e "source database/04_remote_user.sql"
-   ```
-5. On each agent PC, set `host=` in `config.ini` to the server's IP address (find it with `ipconfig`).
+4. On each agent PC, set `host=` in `config.ini` to the server's IP address (find it with `ipconfig`).
 
 If the server PC changes network (for example a different Wi-Fi), its IP changes and `config.ini` on the agent PCs must be updated.
 
@@ -130,10 +137,26 @@ Get-Service -Name "MySQL80"
 
 If it is stopped, start it from an admin PowerShell with `Start-Service -Name "MySQL80"`.
 
+### 7. Test the connection and schema
+
+Build and run the connection test after creating `config.ini`:
+
+```
+make test_connection.exe
+.\test_connection.exe
+```
+
+The test reads the database settings from `config.ini`, connects to the
+`activity_monitor` database, and runs a read-only query against the `sessions`
+table. A successful run prints the number of sessions currently in the
+database. It does not insert test data. A non-zero exit code means that the
+configuration, connection, or schema check failed.
+
 ## Build
 
 ```
 make                     # builds activity_monitor.exe
+make test_connection.exe # builds the connection and schema test
 make report.exe          # builds the report program
 make all_targets         # builds every program
 make clean               # deletes all .exe files
@@ -229,7 +252,7 @@ Activity_Logger/
 ├── process_list.cpp         Test program: lists apps with a visible window
 ├── process_stats.cpp        Test program: CPU and memory for one process ID
 ├── idle_check.cpp           Test program: live idle timer
-├── test_connection.cpp      Old connection test (see note below)
+├── test_connection.cpp      Read-only database connection and schema test
 ├── config.ini.example       Copy to config.ini and edit
 ├── Makefile                 Build rules
 ├── database/
@@ -237,17 +260,18 @@ Activity_Logger/
 │   ├── 01_schema.sql        Tables
 │   ├── 02_seed_data.sql     Game list and score weights
 │   ├── 03_views.sql         Score views
-│   ├── 04_remote_user.sql   Optional: user for other PCs
+│   ├── 04_remote_user.sql   Database user (local and remote accounts)
 │   └── reports.sql          Example queries
 ├── libmysql.dll/.a/.def     MySQL client library files
 └── include/                 MySQL headers
 ```
 
-`test_connection.cpp` is out of date. Its connection part works, but it then tries to insert into the old `activity_log` table, which no longer exists, so it prints an insert error. Use it only to test the connection, or delete it.
-
 ## Troubleshooting
 
 - **"Connection failed:" with no reason shown:** check that MySQL is running, and that the `host` in `config.ini` is correct. After changing Wi-Fi, the server's IP may have changed.
+- **"config.ini is missing database settings":** copy `config.ini.example` to `config.ini` and set `host`, `user`, `password`, and `database`.
+- **"Schema check failed":** run `mysql -u root -p -e "source database/setup_all.sql"` to create the current schema, then run `.\test_connection.exe` again.
+- **"Access denied" for `monitor_user` on the same PC:** the `localhost` account may be missing. Run `database/04_remote_user.sql`. MySQL treats `@'localhost'` and `@'%'` as different accounts.
 - **`mysql.h: No such file or directory`:** you used the Run button. Use `make`.
 - **`missing separator` from make:** a command line in the Makefile starts with spaces. Replace them with one Tab.
 - **Service will not start ("Cannot open service"):** use an admin PowerShell.
