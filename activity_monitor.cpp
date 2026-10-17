@@ -40,7 +40,8 @@ struct Snapshot
 // Shared resource 1: the queue (protected by g_queueMutex)
 queue<Snapshot> g_snapshotQueue;
 mutex g_queueMutex;
-condition_variable g_queueCondVar;
+condition_variable g_notEmpty;
+condition_variable g_notFull;
 bool g_producerDone = false; // always read/written under g_queueMutex
 const size_t MAX_QUEUE_SIZE = 50;
 
@@ -74,7 +75,8 @@ BOOL WINAPI ConsoleHandler(DWORD signal)
         lock_guard<mutex> lock(g_queueMutex);
         g_stopRequested = true;
     }
-        g_queueCondVar.notify_all();
+        g_notEmpty.notify_all();
+        g_notFull.notify_all();
 
         // Windows kills the process shortly after this handler returns,
         // so wait (up to 4 seconds) until main() has closed the session.
@@ -188,13 +190,13 @@ void ProducerThread()
             // ---- Critical section: lock before touching the shared queue ----
             {
                 unique_lock<mutex> lock(g_queueMutex);
-                g_queueCondVar.wait(lock, []
+                g_notFull.wait(lock, []
                                     { return g_snapshotQueue.size() < MAX_QUEUE_SIZE || g_stopRequested; });
                 if (g_stopRequested)
                     break;
                 g_snapshotQueue.push(snap);
             }
-            g_queueCondVar.notify_one();
+            g_notEmpty.notify_one();
         }
 
         int sampleTimeSpent = processes.size() * 200;
@@ -208,7 +210,8 @@ void ProducerThread()
         unique_lock<mutex> lock(g_queueMutex);
         g_producerDone = true;
     }
-    g_queueCondVar.notify_all();
+    g_notEmpty.notify_all();
+    g_notFull.notify_all();
 }
 
 // ---------- Consumer: pulls snapshots from the queue, writes them to MySQL ----------
@@ -222,8 +225,8 @@ void ConsumerThread(MYSQL *conn, unsigned long long sessionId)
 
         {
             unique_lock<mutex> lock(g_queueMutex);
-            g_queueCondVar.wait(lock, []
-                                { return !g_snapshotQueue.empty() || g_producerDone; });
+            g_notEmpty.wait(lock, []
+                            { return !g_snapshotQueue.empty() || g_producerDone || g_stopRequested; });
 
             if (!g_snapshotQueue.empty())
             {
@@ -231,12 +234,12 @@ void ConsumerThread(MYSQL *conn, unsigned long long sessionId)
                 g_snapshotQueue.pop();
                 gotItem = true;
             }
-            else if (g_producerDone)
+            else if (g_producerDone || g_stopRequested)
             {
                 break;
             }
         }
-        g_queueCondVar.notify_one();
+        g_notFull.notify_one();
 
         if (gotItem)
         {
