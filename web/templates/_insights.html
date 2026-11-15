@@ -1,0 +1,22 @@
+<form class="generate-form" method="post" action="{{ url_for('generate_insight') }}" data-generate-form>
+  <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+  {% if session.get('role') == 'boss' %}<input type="hidden" name="employee_id" value="{{ insight_employee_id }}">{% endif %}
+  <button class="button button-primary" type="submit"><span class="button-label">✦ Generate AI insight</span><span class="button-loading">Generating…</span></button>
+  <span class="muted">Uses saved activity data and keeps the latest result here.</span>
+</form>
+{% if insights %}
+{% for insight in insights %}<article class="insight"><h3>{{ insight.generated_at }}{% if insight.model_name %} <span class="muted">({{ insight.model_name }})</span>{% endif %}</h3>
+{% set output = insight.output %}
+<p>{{ output.get('boss_summary', 'No summary saved.') }}</p>
+{% if output.get('employee_tips') %}<h4>Tips</h4><ul>{% for tip in output.employee_tips %}<li>{{ tip.get('tip') }} <span class="muted">({{ tip.get('evidence') }})</span></li>{% endfor %}</ul>{% endif %}
+</article>{% endfor %}
+{% else %}<div class="empty-state"><span class="empty-icon">✦</span><p>No saved insights yet.</p><p class="muted">Generate one when you have enough recorded activity.</p></div>{% endif %}
+<script>
+document.querySelectorAll('[data-generate-form]').forEach(function (form) {
+  form.addEventListener('submit', function () {
+    var button = form.querySelector('button');
+    button.disabled = true;
+    form.classList.add('is-loading');
+  });
+});
+</script>

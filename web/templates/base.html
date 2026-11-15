@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Activity Logger{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  {% if session.get('employee_id') %}
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark">AL</span><span>Activity Logger</span></a>
+      <nav>
+        <a href="{{ url_for('dashboard') }}" class="nav-link">▦ <span>Overview</span></a>
+        {% if session.get('role') == 'boss' %}<a href="{{ url_for('boss_dashboard') }}" class="nav-link">◫ <span>Employees</span></a>{% endif %}
+      </nav>
+      <div class="sidebar-user"><strong>{{ session.get('employee_name', session.get('employee_id')) }}</strong><span>{{ session.get('role')|title }}</span>
+        <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="link-button" type="submit">Sign out</button></form>
+      </div>
+    </aside>
+    <div class="page">
+      <header class="topbar"><span class="eyebrow">WORKSPACE / {{ session.get('role')|upper }}</span><div class="topbar-spacer"></div><span class="status-dot">● Live</span></header>
+  {% else %}
+  <header class="topbar public-bar"><a class="brand" href="{{ url_for('login') }}"><span class="brand-mark">AL</span><span>Activity Logger</span></a></header>
+  {% endif %}
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  {% if session.get('employee_id') %}</div></div>{% endif %}
+</body>
+</html>

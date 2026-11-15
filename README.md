@@ -152,6 +152,63 @@ table. A successful run prints the number of sessions currently in the
 database. It does not insert test data. A non-zero exit code means that the
 configuration, connection, or schema check failed.
 
+## Web dashboard
+
+The optional `web/` application is a small server-rendered Flask dashboard
+using the same `config.ini` database settings.
+
+### Setup, migration, and accounts
+
+Install dependencies in a virtual environment:
+
+```
+py -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-web.txt
+```
+
+New databases made with `database/setup_all.sql` include the current tables.
+For older databases, run the applicable migrations once:
+
+```
+mysql -u root -p -e "source database/migrations/003_add_employees.sql"
+mysql -u root -p -e "source database/migrations/002_create_ai_insights.sql"
+```
+
+Create accounts with a private password prompt; no real credentials are
+hardcoded or stored in the repository:
+
+```
+.\.venv\Scripts\python web/bootstrap_account.py --employee-id EMP001 --name "Employee One" --role employee
+.\.venv\Scripts\python web/bootstrap_account.py --employee-id BOSS001 --name "Team Lead" --role boss
+```
+
+Passwords must be at least 12 characters. For automation, use
+`--password-stdin` from a secret manager rather than putting passwords in
+source or command history.
+
+### Run, routes, and security
+
+```
+$env:WEB_SECRET_KEY = [guid]::NewGuid().ToString("N") # use a durable random secret in production
+.\.venv\Scripts\python -m web.app
+```
+
+Open `http://127.0.0.1:5000/`. Routes are `/login`, `POST /logout`,
+`/employee`, `/boss`, and `/boss/employees/<employee_id>`. Employee pages
+only query the logged-in employee's ID. Boss pages use the `employee_scores`
+and `session_scores` views and show saved `ai_insights`; empty data is shown
+gracefully. The app uses parameterized SQL, Werkzeug password hashes,
+HTTP-only SameSite cookies, CSRF tokens, active-account checks, and role
+authorization. Set `WEB_COOKIE_SECURE=true` behind HTTPS. Do not expose
+Flask's development server directly to the internet. Existing AI behavior is
+preserved: app names are not excluded before Gemini processing.
+
+Troubleshooting: run from the project root (or set `ACTIVITY_CONFIG` to an
+absolute config path); verify MySQL and `[database]` settings for connection
+errors; run `database/setup_all.sql` plus applicable migrations when tables or
+views are missing. No scores appear until a completed session meets the
+minimum score duration.
+
 ## Build
 
 ```
@@ -262,6 +319,8 @@ Activity_Logger/
 │   ├── 03_views.sql         Score views
 │   ├── 04_remote_user.sql   Database user (local and remote accounts)
 │   └── reports.sql          Example queries
+├── web/                     Flask dashboard, templates, CSS, account helper
+├── requirements-web.txt     Web dependencies
 ├── libmysql.dll/.a/.def     MySQL client library files
 └── include/                 MySQL headers
 ```
@@ -290,4 +349,6 @@ Activity_Logger/
 - **Deadlock is prevented by a rule, not shown happening.** No thread takes the two locks in the reverse order, so a deadlock never occurs. The code shows the lock-ordering rule, not a deadlock being triggered and fixed.
 - **SQL is built by joining text.** This is not safe against SQL injection. Prepared statements would fix it.
 - **Security is basic.** The database password is stored as plain text in `config.ini`. The remote user can connect from any computer. This is fine for a demo, not for real use.
-- **There is no dashboard yet.** Results are seen through `report.exe` or SQL queries. A web dashboard for employees and bosses is planned.
+- **The web dashboard is intentionally small.** Use HTTPS and a production
+  WSGI server for real deployments; Flask's development server is for local
+  use only.

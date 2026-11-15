@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in - Activity Logger{% endblock %}
+{% block content %}
+<section class="login-card">
+  <div class="login-brand"><span class="brand-mark">AL</span><span>Activity Logger</span></div>
+  <p class="eyebrow">WELCOME BACK</p><h1>Sign in to your workspace</h1>
+  <p class="muted">See clear activity signals and practical, data-grounded insights.</p>
+  <form method="post">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <label>Employee ID<input name="employee_id" required autocomplete="username"></label>
+    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+    <button class="button button-primary button-wide" type="submit">Sign in <span>→</span></button>
+  </form>
+</section>
+{% endblock %}

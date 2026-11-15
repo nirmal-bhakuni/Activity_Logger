@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Boss dashboard - Activity Logger{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">MANAGEMENT OVERVIEW</p><h1>Team performance</h1><p class="muted">Review activity patterns and generate grounded AI guidance for one employee.</p></div></div>
+<div class="metric-grid">
+  <div class="metric-card"><span>Active employees</span><strong>{{ employees|length }}</strong><small>Accounts in this workspace</small></div>
+  <div class="metric-card"><span>Tracked sessions</span><strong>{{ employees|sum(attribute='sessions_counted') }}</strong><small>Completed sessions</small></div>
+  <div class="metric-card accent"><span>Average team score</span><strong>{% set scored = employees|selectattr('avg_score', 'ne', none)|list %}{% if scored %}{{ "%.1f"|format(scored|sum(attribute='avg_score') / scored|length) }}{% else %}—{% endif %}</strong><small>Across active employees</small></div>
+</div>
+<section class="card">
+  <div class="section-heading"><div><p class="eyebrow">TEAM</p><h2>Employee summaries</h2></div></div>
+  {% if employees %}
+  <table><thead><tr><th>Employee</th><th>Sessions</th><th>Average</th><th>Range</th><th></th></tr></thead>
+  <tbody>{% for employee in employees %}<tr>
+    <td>{{ employee.employee_name }}<br><span class="muted">{{ employee.employee_id }}</span></td>
+    <td>{{ employee.sessions_counted }}</td><td>{{ employee.avg_score if employee.avg_score is not none else "—" }}</td>
+    <td>{% if employee.worst_score is not none %}{{ employee.worst_score }}–{{ employee.best_score }}{% else %}—{% endif %}</td>
+    <td><a class="button button-small" href="{{ url_for('employee_detail', employee_id=employee.employee_id) }}">View details <span>→</span></a></td>
+  </tr>{% endfor %}</tbody></table>
+  {% else %}<p>No active employee accounts yet.</p>{% endif %}
+</section>
+{% endblock %}

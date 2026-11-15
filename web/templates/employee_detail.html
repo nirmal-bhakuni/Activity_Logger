@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ employee.employee_name }} - Activity Logger{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">EMPLOYEE DETAIL</p><h1>{{ employee.employee_name }}</h1><p class="muted">{{ employee.employee_id }} · Activity and saved guidance</p></div></div>
+<section class="card"><div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>Session scores</h2></div></div>{% include "_scores.html" %}</section>
+<section class="card"><div class="section-heading"><div><p class="eyebrow">AI GUIDANCE</p><h2>Saved AI insights</h2></div></div>{% set insight_employee_id = employee.employee_id %}{% include "_insights.html" %}</section>
+<p><a href="{{ url_for('boss_dashboard') }}">Back to summaries</a></p>
+{% endblock %}

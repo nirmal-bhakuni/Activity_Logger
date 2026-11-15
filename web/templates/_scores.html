@@ -1,0 +1,4 @@
+{% if scores %}
+<div class="table-wrap"><table><thead><tr><th>Started</th><th>Minutes</th><th>Game sec</th><th>Idle sec</th><th>Score</th></tr></thead>
+<tbody>{% for score in scores %}<tr><td>{{ score.start_time }}</td><td>{{ "%.1f"|format((score.session_sec or 0) / 60) }}</td><td>{{ score.game_sec or 0 }}</td><td>{{ score.idle_sec or 0 }}</td><td><strong>{{ score.productivity_score }}</strong></td></tr>{% endfor %}</tbody></table></div>
+{% else %}<p>No completed scored sessions.</p>{% endif %}

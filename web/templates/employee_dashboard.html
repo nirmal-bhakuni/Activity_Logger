@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}My dashboard - Activity Logger{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">PERSONAL OVERVIEW</p><h1>Good morning, {{ employee.employee_name }}</h1><p class="muted">Your activity signals, summarized clearly and privately.</p></div></div>
+<div class="metric-grid">
+  <div class="metric-card"><span>Sessions scored</span><strong>{{ scores|length }}</strong><small>Recent completed sessions</small></div>
+  <div class="metric-card"><span>Average score</span><strong>{% if scores %}{{ "%.1f"|format(scores|map(attribute='productivity_score')|sum / scores|length) }}{% else %}—{% endif %}</strong><small>Across visible sessions</small></div>
+  <div class="metric-card accent"><span>AI guidance</span><strong>{{ insights|length }}</strong><small>Saved insights</small></div>
+</div>
+<section class="card">
+  <div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>My session scores</h2></div></div>
+  {% include "_scores.html" %}
+</section>
+<section class="card">
+  <div class="section-heading"><div><p class="eyebrow">AI GUIDANCE</p><h2>Saved AI insights</h2></div></div>
+  {% set insight_employee_id = employee.employee_id %}
+  {% include "_insights.html" %}
+</section>
+{% endblock %}
