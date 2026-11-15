@@ -1,354 +1,414 @@
-# Employee Activity Monitoring System
+# Activity Logger
 
-A Windows project for **Operating Systems + DBMS**. A small agent runs on an employee's PC, records which apps are open, how much CPU and memory they use, and whether the user is idle. It saves everything to a central MySQL database. A productivity score is then calculated from that data.
+Windows activity-monitoring project for an Operating Systems and DBMS
+demonstration. The native monitor records visible applications, CPU, memory,
+foreground-window state, and idle time. It writes the results to MySQL and
+calculates productivity scores. An optional Flask dashboard and optional
+Gemini integration provide browser-based reporting and AI-generated summaries.
 
-## What it does
+## What is included
 
-- Lists the apps that have a visible window, using Windows system calls
-- Measures CPU and memory for each app
-- Detects idle time (no keyboard or mouse input)
-- Saves the data to MySQL using three threads that share a queue
-- Supports many PCs writing to one central database (each PC has its own employee ID)
-- Calculates a productivity score per session and per employee, with a penalty for games and idle time
-- Starts automatically when Windows starts (Startup folder shortcut)
-- Prints a text report from the saved data
+- `activity_monitor.exe`: records activity for a two-minute session.
+- `test_connection.exe`: verifies the database connection and schema without
+  inserting test data.
+- `report.exe`: prints SQL reports. Its database credentials are currently
+  constants in `report.cpp`, so edit that file before using it.
+- `web/`: optional Flask employee and boss dashboard.
+- `ai/`: optional summary and Gemini insight tools.
+- `database/`: schema, seed data, views, remote-user SQL, and legacy migrations.
 
-## OS concepts used
+## Prerequisites
 
-**Written in this project's own code**
+Install these on a new Windows 10 or Windows 11 device:
 
-- **Multithreading:** three threads (producer, consumer, reporter) made with `std::thread`
-- **Producer-consumer with a bounded queue:** the producer scans apps and pushes into a queue (max 50). The consumer takes items out and writes them to MySQL. A mutex and a condition variable keep the two threads in step. The consumer sleeps when the queue is empty, and the producer waits when it is full.
-- **Mutual exclusion:** one mutex guards the queue and a second mutex guards the session statistics
-- **Deadlock prevention by lock ordering:** if a thread needs both locks, it always takes the queue lock first and the stats lock second. The consumer never holds both at once. Only the reporter thread takes both, in the fixed order.
-- **Atomic variables:** `std::atomic` for the idle counter and the stop flag
-- **Safe shutdown:** the Ctrl+C / window-close handler only sets a stop flag. The other threads stop, and `main()` closes the session. Only one thread ever uses the database connection at a time.
+1. **Git**
+2. **MySQL Server 8.0**, including the MySQL command-line client
+3. **MinGW-w64**, with `g++`, `gendef`, and `dlltool` on `PATH`
+4. **GNU Make** (`make` or `mingw32-make`)
+5. **Python 3.9 or newer** (only needed for the dashboard or AI tools)
 
-**Used from Windows (calls to the OS, not our own algorithms)**
+Confirm the tools from PowerShell:
 
-- Process list (`CreateToolhelp32Snapshot`), window check (`EnumWindows`)
-- CPU time (`GetProcessTimes`, `GetSystemTimes`) and memory (`GetProcessMemoryInfo`)
-- Idle time (`GetLastInputInfo`)
-
-## DBMS concepts used
-
-- **Client-server database:** MySQL runs as a server. Agents on other PCs connect to it over the network.
-- **Normalized schema:** `sessions` has many `process_snapshots`, linked by a foreign key
-- **Data-driven settings:** the game list (`game_processes`) and score weights (`score_config`) are tables, so they change with one SQL statement and no recompiling
-- **Views:** `session_scores` and `employee_scores` save the score calculation, so it is never rewritten
-- **Queries:** joins, subqueries, `GROUP BY`, aggregates, and `CASE` inside `COUNT`
-
-## Requirements
-
-- Windows 10 or 11
-- MinGW-w64 with `g++`, `gendef` and `dlltool`
-- `make`
-- MySQL Server 8.0
-
-## Setup
-
-### 1. Get the code
-
-```
-git clone <your-repo-url>
-cd Activity_Logger
+```powershell
+git --version
+mysql --version
+g++ --version
+make --version
+py --version
 ```
 
-### 2. Create the database
+If `mysql`, `g++`, or `make` is not recognized, add the installation
+directories to the system or user `PATH`, then open a new PowerShell window.
 
-Run this from the project folder. The SQL files are in the `database` folder.
+## 1. Get the project
 
+```powershell
+git clone <repository-url>
+Set-Location .\Activity_Logger
 ```
+
+Always run the commands below from the project root. The programs look for
+`config.ini` in the current directory.
+
+## 2. Create the MySQL database
+
+Make sure the MySQL service is running:
+
+```powershell
+Get-Service -Name MySQL80
+# Run in an Administrator PowerShell only if it is stopped:
+Start-Service -Name MySQL80
+```
+
+Create the database, tables, seed data, and score views:
+
+```powershell
 mysql -u root -p -e "source database/setup_all.sql"
 ```
 
-This runs, in order:
+Enter the MySQL root password when prompted. `setup_all.sql` runs these files
+in order:
 
-- `01_schema.sql` creates the tables
-- `02_seed_data.sql` adds the starting game list and score weights
-- `03_views.sql` creates the score views
+1. `database/01_schema.sql` - creates the `activity_monitor` database and
+   current tables
+2. `database/02_seed_data.sql` - inserts the initial game list and score
+   settings
+3. `database/03_views.sql` - creates `session_scores` and `employee_scores`
 
-It is safe to run again. It only creates what is missing.
+The scripts use `IF NOT EXISTS` or `CREATE OR REPLACE`; running them again does
+not delete existing rows.
 
-Use this command, not `mysql ... < file.sql`. The `<` form does not work in PowerShell.
+### Optional: create an application database user
 
-### 3. Create `config.ini`
+For a local-only installation, using a local MySQL account is sufficient. For
+a safer setup, edit the password in `database/04_remote_user.sql`, then run:
 
-Copy the example and edit it:
-
-```
-copy config.ini.example config.ini
-```
-
-Set the database host, user, password, and this PC's employee ID. `config.ini` holds a password and is in `.gitignore`. Do not commit it.
-
-If you are running on the same PC as MySQL, use `host=localhost`. You can use `root` as the user, or create `monitor_user` with `database/04_remote_user.sql` (see step 5).
-
-### 4. MySQL library files
-
-The repo already includes `libmysql.dll`, `libmysql.a`, `libmysql.def` and the `include/` folder. To rebuild them on another PC:
-
-1. Copy `libmysql.dll` from `C:\Program Files\MySQL\MySQL Server 8.0\lib\` into the project folder.
-2. Make the MinGW import library:
-   ```
-   gendef libmysql.dll
-   dlltool -d libmysql.def -l libmysql.a -D libmysql.dll
-   ```
-3. Copy the `include` folder from `C:\Program Files\MySQL\MySQL Server 8.0\` into the project folder.
-
-Why: MySQL's own Connector/C++ is built for the MSVC compiler and does not link with MinGW. The C library (`libmysql`) with a MinGW-made `.a` file does.
-
-### 5. Create the database user (and optionally let other PCs connect)
-
-Edit the password in `database/04_remote_user.sql`, then run it on the PC that runs MySQL:
-
-```
+```powershell
 mysql -u root -p -e "source database/04_remote_user.sql"
 ```
 
-This creates two accounts, because MySQL treats them as separate:
+This creates `monitor_user` accounts for both `localhost` and remote clients.
+The SQL file contains the exact privileges granted to the user.
 
-- `monitor_user`@`localhost` is for an agent on the same PC as MySQL
-- `monitor_user`@`%` is for agents on other PCs
+For agents on another PC, also do the following on the MySQL server:
 
-If every agent runs on the MySQL PC, you are done with this step. Only follow the rest if agents run on different PCs. On the server PC:
+1. In `my.ini` (normally
+   `C:\ProgramData\MySQL\MySQL Server 8.0\my.ini`), add under `[mysqld]`:
 
-1. Edit `my.ini` (usually `C:\ProgramData\MySQL\MySQL Server 8.0\`). Under `[mysqld]` add:
-   ```
+   ```ini
    bind-address=0.0.0.0
    ```
-2. Restart MySQL in an admin PowerShell:
-   ```
-   Restart-Service -Name "MySQL80"
-   ```
-3. Open the firewall port in an admin PowerShell:
-   ```
-   New-NetFirewallRule -DisplayName "MySQL Remote Access" -Direction Inbound -Protocol TCP -LocalPort 3306 -Action Allow
-   ```
-4. On each agent PC, set `host=` in `config.ini` to the server's IP address (find it with `ipconfig`).
 
-If the server PC changes network (for example a different Wi-Fi), its IP changes and `config.ini` on the agent PCs must be updated.
+2. Restart MySQL from an Administrator PowerShell:
 
-### 6. Make sure MySQL is running
+   ```powershell
+   Restart-Service -Name MySQL80
+   ```
 
+3. Allow TCP port 3306:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "MySQL Remote Access" `
+     -Direction Inbound -Protocol TCP -LocalPort 3306 -Action Allow
+   ```
+
+4. Find the server address with `ipconfig` and use that address as `host` in
+   each agent's `config.ini`.
+
+Do not expose MySQL to the public internet. Restrict the firewall rule to the
+private network when possible.
+
+## 3. Configure the monitor
+
+Create the local configuration file:
+
+```powershell
+Copy-Item .\config.ini.example .\config.ini
+notepad .\config.ini
 ```
-Get-Service -Name "MySQL80"
+
+Set at least these values:
+
+```ini
+[database]
+host=localhost
+user=monitor_user
+password=YOUR_DATABASE_PASSWORD
+database=activity_monitor
+
+[employee]
+employee_id=EMP001
+employee_name=Your Name
 ```
 
-If it is stopped, start it from an admin PowerShell with `Start-Service -Name "MySQL80"`.
+Use the MySQL server's IP address instead of `localhost` on a different
+machine. Give every monitored PC its own `employee_id`. The optional Gemini
+section can remain unchanged until AI features are configured.
 
-### 7. Test the connection and schema
+`config.ini` contains secrets and is ignored by Git. Never commit it or share
+its contents.
 
-Build and run the connection test after creating `config.ini`:
+## 4. Rebuild the MySQL client files if needed
 
+The repository includes `libmysql.dll`, `libmysql.a`, `libmysql.def`, and the
+MySQL headers under `include/`. If these files are missing or incompatible
+with the new device's MinGW installation, install MySQL Server 8.0 and copy:
+
+- `libmysql.dll` from the MySQL `lib` directory to the project root
+- the MySQL `include` directory to the project root as `include`
+
+From the project root, recreate the MinGW import library:
+
+```powershell
+gendef .\libmysql.dll
+dlltool -d .\libmysql.def -l .\libmysql.a -D libmysql.dll
 ```
-make test_connection.exe
+
+The DLL must be beside the executables when they run. The Makefile links the
+native programs with the MySQL C client, Windows PSAPI, and pthread support.
+
+## 5. Build and verify
+
+```powershell
+make all_targets
 .\test_connection.exe
 ```
 
-The test reads the database settings from `config.ini`, connects to the
-`activity_monitor` database, and runs a read-only query against the `sessions`
-table. A successful run prints the number of sessions currently in the
-database. It does not insert test data. A non-zero exit code means that the
-configuration, connection, or schema check failed.
+Expected output includes `Connected to activity_monitor DB successfully!` and
+`Schema check passed`.
 
-## Web dashboard
+Available build targets:
 
-The optional `web/` application is a small server-rendered Flask dashboard
-using the same `config.ini` database settings.
-
-### Setup, migration, and accounts
-
-Install dependencies in a virtual environment:
-
-```
-py -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements-web.txt
+```powershell
+make                     # activity_monitor.exe
+make test_connection.exe
+make report.exe
+make all_targets
+make clean
 ```
 
-New databases made with `database/setup_all.sql` include the current tables.
-For older databases, run the applicable migrations once:
+Use `make`, not the VS Code Run button. The project requires the include,
+library, PSAPI, C++17, and pthread flags defined in the Makefile. If Make
+reports `missing separator`, the Makefile was edited with spaces instead of
+the required command tabs.
 
-```
-mysql -u root -p -e "source database/migrations/003_add_employees.sql"
-mysql -u root -p -e "source database/migrations/002_create_ai_insights.sql"
-```
+## 6. Run the native monitor
 
-Create accounts with a private password prompt; no real credentials are
-hardcoded or stored in the repository:
-
-```
-.\.venv\Scripts\python web/bootstrap_account.py --employee-id EMP001 --name "Employee One" --role employee
-.\.venv\Scripts\python web/bootstrap_account.py --employee-id BOSS001 --name "Team Lead" --role boss
-```
-
-Passwords must be at least 12 characters. For automation, use
-`--password-stdin` from a secret manager rather than putting passwords in
-source or command history.
-
-### Run, routes, and security
-
-```
-$env:WEB_SECRET_KEY = [guid]::NewGuid().ToString("N") # use a durable random secret in production
-.\.venv\Scripts\python -m web.app
-```
-
-Open `http://127.0.0.1:5000/`. Routes are `/login`, `POST /logout`,
-`/employee`, `/boss`, and `/boss/employees/<employee_id>`. Employee pages
-only query the logged-in employee's ID. Boss pages use the `employee_scores`
-and `session_scores` views and show saved `ai_insights`; empty data is shown
-gracefully. The app uses parameterized SQL, Werkzeug password hashes,
-HTTP-only SameSite cookies, CSRF tokens, active-account checks, and role
-authorization. Set `WEB_COOKIE_SECURE=true` behind HTTPS. Do not expose
-Flask's development server directly to the internet. Existing AI behavior is
-preserved: app names are not excluded before Gemini processing.
-
-Troubleshooting: run from the project root (or set `ACTIVITY_CONFIG` to an
-absolute config path); verify MySQL and `[database]` settings for connection
-errors; run `database/setup_all.sql` plus applicable migrations when tables or
-views are missing. No scores appear until a completed session meets the
-minimum score duration.
-
-## Build
-
-```
-make                     # builds activity_monitor.exe
-make test_connection.exe # builds the connection and schema test
-make report.exe          # builds the report program
-make all_targets         # builds every program
-make clean               # deletes all .exe files
-```
-
-Build with `make`. Do not use the VS Code Run button. It compiles without the flags this project needs (`-I.\include`, `-lmysql`, `-lpsapi`, `-pthread`) and fails with `mysql.h: No such file`.
-
-The Makefile needs a real **tab** (not spaces) before each command line. If you see `missing separator`, that is the cause.
-
-## Run
-
-### Start monitoring
-
-```
+```powershell
 .\activity_monitor.exe
 ```
 
-- Connects to MySQL and starts a new session
-- Every 5 seconds, scans the apps and saves their CPU, memory and idle state
-- Runs for 2 minutes, or until Ctrl+C. The session is closed properly either way, including when the console window is closed.
+The monitor:
 
-To keep a copy of the output:
+- opens a new database session;
+- scans visible applications every five seconds;
+- records CPU, memory, idle, and focus information;
+- runs for about two minutes; and
+- closes the session on normal exit or Ctrl+C.
 
+Save console output if required:
+
+```powershell
+.\activity_monitor.exe | Tee-Object .\run_log.txt
 ```
-.\activity_monitor.exe > run_log.txt
-```
 
-Settings at the top of `activity_monitor.cpp`:
+The demo settings are in `activity_monitor.cpp`:
 
 ```cpp
-const int SNAPSHOT_INTERVAL_SECONDS = 5;
-const int TOTAL_RUN_SECONDS = 120;
-const int IDLE_THRESHOLD_SECONDS = 60;
-const int CONSUMER_DEMO_DELAY_MS = 700; // demo only, set to 0 for normal use
+SNAPSHOT_INTERVAL_SECONDS = 5;
+TOTAL_RUN_SECONDS = 120;
+IDLE_THRESHOLD_SECONDS = 60;
+CONSUMER_DEMO_DELAY_MS = 700;
 ```
 
-`CONSUMER_DEMO_DELAY_MS` slows the consumer on purpose, so the log shows producer and consumer running at the same time. Set it to `0` for normal use. If you change `SNAPSHOT_INTERVAL_SECONDS`, also update `snapshot_interval_sec` in the `score_config` table.
+Set `CONSUMER_DEMO_DELAY_MS` to `0` for normal operation. If the snapshot
+interval is changed, update `snapshot_interval_sec` in `score_config` too.
 
-### Start automatically when Windows starts
+## 7. View scores and reports
 
-1. Press `Win + R`, type `shell:startup`, press Enter.
-2. Create a shortcut to `activity_monitor.exe` in that folder.
-3. Open the shortcut's Properties and set **Start in** to the project folder. This is needed so `config.ini` is found.
-4. Optional: set **Run** to *Minimized*.
+Run the text report:
 
-### View the report
-
-```
+```powershell
 .\report.exe
 ```
 
-`report.cpp` has the database host, user and password as constants at the top. Edit them before you build it.
+Before building `report.exe`, edit `DB_HOST`, `DB_USER`, `DB_PASS`, and
+`DB_NAME` near the top of `report.cpp`. Unlike the monitor and web application,
+the report program does not currently read `config.ini`.
 
-You can also run the SQL directly. See `database/reports.sql`.
+The saved score views can also be queried directly:
 
-## Productivity score
-
-```
-score = 100 - game_weight * (% of session spent gaming) - idle_weight * (% of session spent idle)
-```
-
-- The score is kept between 0 and 100
-- The default weights are 1.0 for games and 0.5 for idle time
-- Sessions shorter than 30 seconds are not scored
-- The weights are a policy choice, not a scientific formula
-
-View the scores:
-
-```sql
-SELECT * FROM session_scores ORDER BY session_id DESC;
-SELECT * FROM employee_scores;
+```powershell
+mysql -u monitor_user -p activity_monitor `
+  -e "SELECT * FROM session_scores ORDER BY session_id DESC; SELECT * FROM employee_scores;"
 ```
 
-Change the settings with no recompiling:
+The score is calculated as:
 
-```sql
-INSERT INTO game_processes VALUES ('SomeGame.exe');
-UPDATE score_config SET game_weight = 1.5 WHERE id = 1;
+```text
+100 - game_weight * game_percent - idle_weight * idle_percent
 ```
 
-To see the exact `.exe` names your monitor recorded:
+Scores are clamped to 0-100. Sessions shorter than `min_session_sec` are
+excluded. The default configuration uses a game weight of `1.0`, an idle
+weight of `0.5`, and a five-second snapshot interval.
 
-```sql
-SELECT DISTINCT process_name FROM process_snapshots;
+## Optional web dashboard
+
+Create a Python virtual environment and install the dashboard dependencies:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-web.txt
 ```
 
-## Project structure
+Fresh databases already contain the current `employees` and `ai_insights`
+tables. For a database created by an older version, run the applicable
+migrations once, in this order:
 
+```powershell
+mysql -u root -p -e "source database/migrations/001_add_is_focused.sql"
+mysql -u root -p -e "source database/migrations/002_create_ai_insights.sql"
+mysql -u root -p -e "source database/migrations/003_add_employees.sql"
 ```
-Activity_Logger/
-├── activity_monitor.cpp     Main agent (3 threads, writes to MySQL)
-├── report.cpp               Text report from the saved data
-├── process_list.cpp         Test program: lists apps with a visible window
-├── process_stats.cpp        Test program: CPU and memory for one process ID
-├── idle_check.cpp           Test program: live idle timer
-├── test_connection.cpp      Read-only database connection and schema test
-├── config.ini.example       Copy to config.ini and edit
-├── Makefile                 Build rules
-├── database/
-│   ├── setup_all.sql        Runs 01, 02 and 03 in order
-│   ├── 01_schema.sql        Tables
-│   ├── 02_seed_data.sql     Game list and score weights
-│   ├── 03_views.sql         Score views
-│   ├── 04_remote_user.sql   Database user (local and remote accounts)
-│   └── reports.sql          Example queries
-├── web/                     Flask dashboard, templates, CSS, account helper
-├── requirements-web.txt     Web dependencies
-├── libmysql.dll/.a/.def     MySQL client library files
-└── include/                 MySQL headers
+
+Create dashboard accounts. Passwords are prompted privately and must contain
+at least 12 characters:
+
+```powershell
+.\.venv\Scripts\python.exe web/bootstrap_account.py `
+  --employee-id EMP001 --name "Employee One" --role employee
+
+.\.venv\Scripts\python.exe web/bootstrap_account.py `
+  --employee-id BOSS001 --name "Team Lead" --role boss
 ```
+
+Start the dashboard from the project root:
+
+```powershell
+$env:WEB_SECRET_KEY = [guid]::NewGuid().ToString("N")
+.\.venv\Scripts\python.exe -m web.app
+```
+
+Open <http://127.0.0.1:5000/>. Use a durable random `WEB_SECRET_KEY` outside
+development. Set `$env:WEB_COOKIE_SECURE = "true"` only when the app is behind
+HTTPS. Flask's development server is for local use, not public deployment.
+
+If the configuration file is elsewhere, set its absolute path:
+
+```powershell
+$env:ACTIVITY_CONFIG = "C:\Path\To\config.ini"
+```
+
+## Optional Gemini insights
+
+The AI tools use the Gemini API only when explicitly run. They send a
+sanitized summary, not the employee ID or machine name. App names are cleaned
+before the request, but they are still activity data; follow your
+organization's privacy policy.
+
+Add a key and a model to `config.ini`:
+
+```ini
+[gemini]
+api_key=YOUR_GEMINI_API_KEY
+model=MODEL_NAME
+```
+
+Or keep the key out of the file for the current PowerShell session:
+
+```powershell
+$env:GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+```
+
+Check available models and test the key:
+
+```powershell
+.\.venv\Scripts\python.exe ai/gemini_test.py
+```
+
+Build a numeric summary:
+
+```powershell
+.\.venv\Scripts\python.exe ai/build_summary.py
+.\.venv\Scripts\python.exe ai/build_summary.py EMP001
+```
+
+Generate and save an insight:
+
+```powershell
+.\.venv\Scripts\python.exe ai/insights.py EMP001
+```
+
+Useful safe alternatives:
+
+```powershell
+.\.venv\Scripts\python.exe ai/insights.py EMP001 --show-prompt
+.\.venv\Scripts\python.exe ai/insights.py EMP001 --latest
+.\.venv\Scripts\python.exe ai/insights.py EMP001 --no-save
+```
+
+Insights require scored sessions and normally require focus-tracking data.
+`--force` can be used for older data, but the result will be weaker.
+
+## Automatic startup
+
+To start the monitor when Windows logs in:
+
+1. Press `Win+R`, enter `shell:startup`, and press Enter.
+2. Create a shortcut to `activity_monitor.exe`.
+3. In the shortcut properties, set **Start in** to the project root.
+4. Optionally set **Run** to **Minimized**.
+
+The **Start in** directory is required so the monitor can find `config.ini`.
 
 ## Troubleshooting
 
-- **"Connection failed:" with no reason shown:** check that MySQL is running, and that the `host` in `config.ini` is correct. After changing Wi-Fi, the server's IP may have changed.
-- **"config.ini is missing database settings":** copy `config.ini.example` to `config.ini` and set `host`, `user`, `password`, and `database`.
-- **"Schema check failed":** run `mysql -u root -p -e "source database/setup_all.sql"` to create the current schema, then run `.\test_connection.exe` again.
-- **"Access denied" for `monitor_user` on the same PC:** the `localhost` account may be missing. Run `database/04_remote_user.sql`. MySQL treats `@'localhost'` and `@'%'` as different accounts.
-- **`mysql.h: No such file or directory`:** you used the Run button. Use `make`.
-- **`missing separator` from make:** a command line in the Makefile starts with spaces. Replace them with one Tab.
-- **Service will not start ("Cannot open service"):** use an admin PowerShell.
-- **Old sessions with no end time:** these are from runs before the safe-shutdown fix. Check with `SELECT session_id FROM sessions WHERE end_time IS NULL;`
+| Problem | Fix |
+|---|---|
+| `config.ini is missing` | Copy `config.ini.example` to `config.ini`, edit the database values, and run from the project root. |
+| `Connection failed` | Check `Get-Service MySQL80`, host, port, username, password, firewall, and server IP. |
+| `Schema check failed` | Run `mysql -u root -p -e "source database/setup_all.sql"` and retry the connection test. |
+| `Access denied` for `monitor_user` | Run `database/04_remote_user.sql`; MySQL treats `user@localhost` and `user@%` as different accounts. |
+| `mysql.h: No such file` | Check the project `include` directory and build with `make`, not the VS Code Run button. |
+| `libmysql.dll was not found` | Put the DLL beside the `.exe` files or add its directory to `PATH`. |
+| `make` is not recognized | Install GNU Make or use the installed `mingw32-make` command. |
+| Dashboard cannot connect | Run it from the project root, confirm `.venv` dependencies, and check `[database]` in `config.ini`. |
+| No scores appear | A completed session must be at least `min_session_sec` seconds long. |
 
 ## Known limitations
 
-- **Windows only.** It uses Windows system calls directly.
-- **Windows calls are still used.** Process listing, CPU, memory and idle time come from the standard Windows API, not from custom kernel driver code.
-- **The score is simple.**
-  - A game that is open but not being played still counts as gaming.
-  - Browser games cannot be detected.
-  - If a game has several windowed processes, its time can be over-counted.
-- **Idle time is under-counted.** It only starts counting after 60 seconds of no input.
-- **Session length runs a few seconds over.** A 120-second run lasts about 130 seconds, because the loop timing is not corrected for the time each scan takes. Each snapshot is therefore a little longer than 5 seconds, and game time is slightly under-counted.
-- **Deadlock is prevented by a rule, not shown happening.** No thread takes the two locks in the reverse order, so a deadlock never occurs. The code shows the lock-ordering rule, not a deadlock being triggered and fixed.
-- **SQL is built by joining text.** This is not safe against SQL injection. Prepared statements would fix it.
-- **Security is basic.** The database password is stored as plain text in `config.ini`. The remote user can connect from any computer. This is fine for a demo, not for real use.
-- **The web dashboard is intentionally small.** Use HTTPS and a production
-  WSGI server for real deployments; Flask's development server is for local
-  use only.
+- Windows-only implementation using Windows process, memory, CPU, window, and
+  idle-time APIs.
+- A game is counted when its process is visible; browser games are not
+  detected and several game processes may over-count time.
+- Idle time begins only after 60 seconds without keyboard or mouse input.
+- Focus is sampled every five seconds, so very short application switches can
+  be missed.
+- The native monitor stores database credentials in `config.ini`, and the
+  current remote-user example allows `%`; use a restricted network and
+  production-grade secret management for real deployments.
+- Do not expose Flask's development server directly to the internet.
+
+## Project structure
+
+```text
+Activity_Logger/
+├── activity_monitor.cpp       Native monitoring agent
+├── report.cpp                 Text report program
+├── test_connection.cpp        Read-only connection/schema test
+├── Makefile                   MinGW build targets
+├── config.ini.example         Configuration template
+├── database/
+│   ├── setup_all.sql          Fresh-install entry point
+│   ├── 01_schema.sql          Tables and database
+│   ├── 02_seed_data.sql       Game list and score settings
+│   ├── 03_views.sql           Productivity score views
+│   ├── 04_remote_user.sql     Optional application accounts
+│   ├── migrations/             Upgrades for older databases
+│   └── reports.sql             Example SQL reports
+├── web/                       Flask dashboard and account helper
+├── ai/                        Summary and Gemini integration
+├── include/                   MySQL headers
+└── libmysql.dll/.a/.def       MySQL client runtime/import files
+```
