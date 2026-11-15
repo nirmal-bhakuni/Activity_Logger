@@ -13,3 +13,7 @@ database=activity_monitor
 ; Each employee PC gets its own ID and name
 employee_id=EMP001
 employee_name=Your Name
+
+[gemini]
+api_key=PASTE_YOUR_KEY_HERE
+model=gemini-3.5-flash-lite
